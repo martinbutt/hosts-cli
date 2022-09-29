@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+
+if [[ $(id -u) -ne 0 ]] ; then echo "Please run as root" ; exit 1 ; fi
+
+if ! command -v sed 2>&1 > /dev/null; then
+    echo "Error: 'sed' command required. Please install and ensure it is in your \$PATH"
+fi
+
+if ! command -v grep 2>&1 > /dev/null; then
+    echo "Error: 'grep' command required. Please install and ensure it is in your \$PATH"
+fi
+
+usage() {
+cat << EOF
+Usage: $(basename $0) {-D|-I|-R} -i <ip address> -h <hostname> [-f <filename>]
+
+Actions:
+  -D, --delete       Delete all matching records from the hosts file
+                     If only IP or hostname is provided, all records matching
+                     will be deleted. If both are provided only an exact match
+                     is deleted.
+  -I, --insert       Insert a new record into the hosts file.
+  -R, --replace      Replace a host record in the hosts file with the new IP
+                     address.
+
+Options:
+  -i <ip_address>    The IP address of the record
+  -h <hostname>      The hostname address of the record
+  -f <filename>      The hosts file to operate on (defaults to /etc/hosts)
+EOF
+    exit
+}
+
+ACTION=
+IP=
+HOSTNAME=
+FILENAME=/etc/hosts
+
+while [[ "${1}" != "" ]]; do
+    case "${1}" in
+        -D ) ACTION="delete";;
+        -I ) ACTION="insert";;
+        -R ) ACTION="replace";;
+        -i ) IP="${2}";;
+        -h ) HOSTNAME="${2}";;
+        -f ) FILENAME="${2}";;
+    esac
+    shift
+done
+
+if [ -z "${ACTION}" ]; then
+    >&2 echo "Error: Action required" 
+    usage
+fi
+
+if [ "${ACTION}" != "delete" ] && [ "${ACTION}" != "insert" ] && [ "${ACTION}" != "replace" ]; then
+    >&2 echo "Error: Action must be one of -D, -I or -R" 
+    usage
+fi
+
+if [ "${ACTION}" != "delete" ]; then
+    if [ -z "${IP}" ] || [ -z "${HOSTNAME}" ]; then
+    	>&2 echo "Error: Hostname and IP address required for ${ACTION} action"
+        usage
+    fi
+else
+    if [ -z "${IP}" ] && [ -z "${HOSTNAME}" ]; then
+    	>&2 echo "Error: Hostname or IP address required for replace action" 
+        usage
+    fi
+
+    if [ ! -f "${FILENAME}" ]; then
+    	>&2 echo "Error: Hosts file '${FILENAME}' does not exist" 
+        exit 1
+    fi
+fi
+
+if [ -n "${IP}" ]; then
+    if ! [[ $IP =~ ^([1-9]?[0-9]\.|1[0-9]{2}\.|2[0-4][0-9]\.|25[0-5]\.){3}([1-9]?[0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])$|^([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}$ ]]; then
+    	>&2 echo "Error: IP address '${IP}' is not valid" 
+        exit
+    fi
+fi
+
+HOSTLINE="${IP} ${HOSTNAME}"
+
+delete() {
+    if [ -n "${IP}" ] && [ -n "${HOSTNAME}" ]; then
+        if [ -n "$(grep -E "^(\s)*${IP}(\s)+${HOSTNAME}(\s)*$" ${FILENAME})" ]; then
+            sudo sed -i "/^\s*${IP}\s\+${HOSTNAME}\s*$/d" ${FILENAME}
+        fi
+    elif [ -n "${IP}" ]; then
+        if [ -n "$(grep -E "^(\s)*${IP}(\s)+" ${FILENAME})" ]; then
+            sudo sed -i "/^\s*${IP}\s\+/d" ${FILENAME}
+        fi
+    elif [ -n "${HOSTNAME}" ]; then
+        if [ -n "$(grep -E "(\s)+${HOSTNAME}(\s)*$" ${FILENAME})" ]; then
+            sudo sed -i "/\s\+${HOSTNAME}\s*/d" ${FILENAME}
+        fi
+    else
+    	>&2 echo "Error: Unknown"
+        exit 1
+    fi
+}
+
+insert () {
+    if [ ! -f "${FILENAME}" ]; then
+        echo "" > "${FILENAME}"
+    fi
+
+    if [ -z "$(grep -E "^(\s)*${IP}(\s)+${HOSTNAME}(\s)*$" ${FILENAME})" ]; then
+        sudo -- sh -c -e "echo '${HOSTLINE}' >> ${FILENAME}";
+    fi
+}
+
+replace () {
+    NEW_IP=${IP}
+    IP=
+    delete
+    IP=${NEW_IP}
+    insert
+}
+
+${ACTION}
